@@ -1,13 +1,23 @@
 /**
  * Bearer-token auth middleware for the Streamable HTTP transport.
  *
- * Single shared secret in `MCP_AUTH_TOKEN`, compared in constant time. Mirrors
- * the proven pattern from the other nlma.io MCP servers, minus the OAuth path
- * (this server is single-tenant — just one operator). A token may arrive as an
- * `Authorization: Bearer <t>` header or a `?token=<t>` query param.
+ * Two accepted credentials:
+ *   1. The shared secret in MCP_AUTH_TOKEN — supplied as `Authorization: Bearer
+ *      <t>` or a `?token=<t>` query param. Used by curl, Claude Desktop, and
+ *      Claude Code (header form), and any client that can paste a self-contained
+ *      URL (query form). Compared in constant time.
+ *   2. An opaque OAuth access token minted by the /authorize → /token flow and
+ *      held in the file-backed store (see oauth.ts / oauth-store.ts). Used by
+ *      claude.ai web, which requires OAuth 2.0 + dynamic client registration for
+ *      custom remote connectors and will not attach with a bare bearer URL.
+ *
+ * The 401 challenge advertises `resource_metadata`; that endpoint is served by
+ * mcpAuthRouter (http.ts), so an OAuth-capable client can discover the
+ * authorization server and complete the flow.
  */
 import { timingSafeEqual } from "node:crypto";
 import type { Request, Response, NextFunction } from "express";
+import { isValidOauthAccessToken } from "./oauth.js";
 
 function extractBearer(req: Request): string | null {
   const h = req.headers.authorization;
@@ -30,6 +40,15 @@ function safeEqual(a: string, b: string): boolean {
 const REALM = "lob-mcp";
 const RESOURCE_META = `${process.env.OAUTH_ISSUER ?? "https://lob.nlma.io"}/.well-known/oauth-protected-resource`;
 
+function challenge(res: Response, invalid: boolean): void {
+  const errPart = invalid ? `, error="invalid_token"` : "";
+  res.set(
+    "WWW-Authenticate",
+    `Bearer realm="${REALM}"${errPart}, resource_metadata="${RESOURCE_META}"`,
+  );
+  res.status(401).json({ error: "Unauthorized" });
+}
+
 export function bearerAuth(req: Request, res: Response, next: NextFunction): void {
   const expected = process.env.MCP_AUTH_TOKEN;
   if (!expected) {
@@ -38,17 +57,12 @@ export function bearerAuth(req: Request, res: Response, next: NextFunction): voi
   }
   const token = extractBearer(req);
   if (!token) {
-    res.set("WWW-Authenticate", `Bearer realm="${REALM}", resource_metadata="${RESOURCE_META}"`);
-    res.status(401).json({ error: "Unauthorized" });
+    challenge(res, false);
     return;
   }
-  if (safeEqual(token, expected)) {
+  if (safeEqual(token, expected) || isValidOauthAccessToken(token)) {
     next();
     return;
   }
-  res.set(
-    "WWW-Authenticate",
-    `Bearer realm="${REALM}", error="invalid_token", resource_metadata="${RESOURCE_META}"`,
-  );
-  res.status(401).json({ error: "Unauthorized" });
+  challenge(res, true);
 }

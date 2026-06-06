@@ -14,9 +14,16 @@
  *
  * Routing of test vs live keys is unchanged — it is driven entirely by loadEnv()
  * exactly as in the stdio entry.
+ *
+ * Auth: two paths share the `bearerAuth` gate on /mcp — the static MCP_AUTH_TOKEN
+ * (header or ?token=) and OAuth access tokens. The OAuth 2.0 authorization server
+ * (discovery docs, /register DCR, /authorize, /token, /revoke) is mounted via
+ * mcpAuthRouter so the claude.ai web connector — which refuses bare-bearer remote
+ * servers — can attach. See oauth.ts / oauth-store.ts.
  */
 import express, { type Request, type Response } from "express";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { mcpAuthRouter } from "@modelcontextprotocol/sdk/server/auth/router.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { randomUUID } from "node:crypto";
 import { loadEnv } from "./env.js";
@@ -24,10 +31,17 @@ import { InMemoryTokenStore } from "./preview/token-store.js";
 import { PieceCounter } from "./safety/piece-counter.js";
 import { buildLobServer } from "./server-factory.js";
 import { bearerAuth } from "./auth.js";
+import {
+  oauthProvider,
+  createAuthCode,
+  loginForm,
+  validateOperatorSecret,
+} from "./oauth.js";
 import { SERVER_VERSION } from "./version.js";
 
 const PORT = parseInt(process.env.PORT ?? "3018", 10);
 const HOST = process.env.HOST ?? "0.0.0.0";
+const ISSUER_URL = new URL(process.env.OAUTH_ISSUER ?? "https://lob.nlma.io");
 
 interface Session {
   server: McpServer;
@@ -75,6 +89,7 @@ function main(): void {
   });
 
   app.use(express.json({ limit: "10mb" }));
+  app.use(express.urlencoded({ extended: false }));
 
   app.get("/health", (_req, res) => {
     res.json({
@@ -84,6 +99,61 @@ function main(): void {
       commitMode: env.effectiveCommitMode,
       readMode: env.effectiveReadMode,
     });
+  });
+
+  // OAuth 2.0 authorization server (well-known discovery, /register DCR,
+  // /authorize, /token, /revoke). Public — no bearerAuth.
+  app.use(
+    mcpAuthRouter({
+      provider: oauthProvider,
+      issuerUrl: ISSUER_URL,
+      resourceName: "Lob MCP",
+    }),
+  );
+
+  // Login-form submission target for the /authorize page. Validates the operator
+  // shared secret, then mints a single-use auth code and bounces back to the
+  // client's redirect_uri.
+  app.post("/oauth/callback", (req: Request, res: Response) => {
+    const { client_id, redirect_uri, code_challenge, state, api_key } =
+      req.body as Record<string, string>;
+
+    const rerender = (error: string): void => {
+      res
+        .status(401)
+        .setHeader("Content-Type", "text/html; charset=utf-8")
+        .send(
+          loginForm({
+            clientId: client_id ?? "",
+            redirectUri: redirect_uri ?? "",
+            codeChallenge: code_challenge ?? "",
+            state,
+            error,
+          }),
+        );
+    };
+
+    if (!client_id || !redirect_uri || !code_challenge) {
+      rerender("Missing required authorization parameters.");
+      return;
+    }
+
+    const trimmed = api_key?.trim() ?? "";
+    if (!trimmed) {
+      rerender("Please enter the lob-mcp access token.");
+      return;
+    }
+    try {
+      validateOperatorSecret(trimmed);
+    } catch (err) {
+      rerender(err instanceof Error ? err.message : "Could not validate token.");
+      return;
+    }
+
+    const code = createAuthCode(client_id, redirect_uri, code_challenge);
+    const params = new URLSearchParams({ code });
+    if (state) params.set("state", state);
+    res.redirect(`${redirect_uri}?${params.toString()}`);
   });
 
   app.post("/mcp", bearerAuth, async (req: Request, res: Response) => {

@@ -17,3 +17,7 @@ bestpractices/
 tests/
 .env.test
 .env.test.*
+
+# OAuth token store (secrets — never commit)
+.oauth-store.json
+.oauth-store.json.tmp
