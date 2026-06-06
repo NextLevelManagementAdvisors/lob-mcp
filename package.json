@@ -10,18 +10,21 @@
     "build"
   ],
   "scripts": {
-    "build": "tsc && chmod 755 build/index.js && node scripts/copy-spec-pdfs.mjs",
+    "build": "tsc && chmod 755 build/index.js build/http.js && node scripts/copy-spec-pdfs.mjs",
     "prepare": "npm run build",
     "typecheck": "tsc --noEmit",
     "inspector": "npx @modelcontextprotocol/inspector build/index.js",
     "start": "node build/index.js",
+    "start:http": "node build/http.js",
     "test": "node --test --import tsx 'tests/unit/**/*.test.ts'"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.22.0",
+    "express": "^5.1.0",
     "zod": "^3.25.0"
   },
   "devDependencies": {
+    "@types/express": "^5.0.0",
     "@types/node": "^22.10.0",
     "pdf-lib": "^1.17.1",
     "tsx": "^4.19.0",

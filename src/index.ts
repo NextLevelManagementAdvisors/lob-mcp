@@ -13,15 +13,12 @@
  * stderr is the only legal place to log here — stdout is reserved for the
  * JSON-RPC framed messages the MCP transport reads from the child process.
  */
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { runWizardIfRequested } from "./init/wizard.js";
 import { loadEnv, type LobEnv } from "./env.js";
-import { LobClient } from "./lob/client.js";
 import { InMemoryTokenStore } from "./preview/token-store.js";
 import { PieceCounter } from "./safety/piece-counter.js";
-import { registerAllTools } from "./tools/register.js";
-import { SERVER_VERSION } from "./version.js";
+import { buildLobServer } from "./server-factory.js";
 
 async function main(): Promise<void> {
   if (await runWizardIfRequested(process.argv.slice(2))) return;
@@ -29,37 +26,13 @@ async function main(): Promise<void> {
   const env = loadEnv();
   printBanner(env);
 
-  const lob = new LobClient(env);
   const tokenStore = new InMemoryTokenStore();
   const pieceCounter = new PieceCounter(env.maxPiecesPerRun);
 
   const cleanupTimer = setInterval(() => tokenStore.cleanup(), 60_000);
   cleanupTimer.unref();
 
-  const server = new McpServer(
-    { name: "lob-mcp", version: SERVER_VERSION },
-    {
-      instructions:
-        "Lob MCP server. Preview/commit gated, idempotent, mode-aware.\n\n" +
-        "FLOW:\n" +
-        "• For mail-piece sends (postcards, letters, self-mailers, checks) and bulk inventory orders " +
-        "(buckslips, cards), call `lob_<resource>_preview` first. The response includes a " +
-        "`confirmation_token` and (for postcards/letters/self-mailers) a real Lob proof PDF URL.\n" +
-        "• Then call `lob_<resource>_create` with the same payload plus `confirmation_token`. " +
-        "In live commit mode the token is required; in test mode it is optional.\n\n" +
-        "SAFETY:\n" +
-        "• Two modes route operations to the right key: COMMIT mode gates billable mail-piece sends " +
-        "and inventory orders; READ mode covers everything else (lists, gets, searches, cancels, " +
-        "non-billable creates). Commit mode is TEST unless BOTH `LOB_LIVE_API_KEY` AND `LOB_LIVE_MODE=true` " +
-        "are set. Read mode is LIVE whenever `LOB_LIVE_API_KEY` is configured (set `LOB_READS_USE_TEST=true` " +
-        "to opt out). Reads have no billing risk — analytics like 'how many letters last week?' should " +
-        "see live data.\n" +
-        "• `LOB_MAX_PIECES_PER_RUN` caps total pieces this process may create. Resets on restart.\n" +
-        "• Address fields are PII — avoid echoing them unnecessarily into chat history.",
-    },
-  );
-
-  registerAllTools(server, lob, tokenStore, pieceCounter);
+  const server = buildLobServer(env, tokenStore, pieceCounter);
 
   const transport = new StdioServerTransport();
   await server.connect(transport);
