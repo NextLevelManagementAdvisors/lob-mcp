@@ -31,12 +31,8 @@ import { InMemoryTokenStore } from "./preview/token-store.js";
 import { PieceCounter } from "./safety/piece-counter.js";
 import { buildLobServer } from "./server-factory.js";
 import { bearerAuth } from "./auth.js";
-import {
-  oauthProvider,
-  createAuthCode,
-  loginForm,
-  validateOperatorSecret,
-} from "./oauth.js";
+import { oauthProvider } from "./oauth.js";
+import { createGoogleGate } from "./google-gate.js";
 import { SERVER_VERSION } from "./version.js";
 
 const PORT = parseInt(process.env.PORT ?? "3018", 10);
@@ -101,8 +97,19 @@ function main(): void {
     });
   });
 
+  // Human-identity gate (Google sign-in + MCP_AUTH_TOKEN password fallback).
+  // Mounts /login, /oauth/google/*, /logout and guards /authorize: a valid
+  // lob_authed cookie falls through to the OAuth provider; otherwise → /login.
+  const gate = createGoogleGate();
+  app.use(gate.routes);
+  app.use("/authorize", gate.gate);
+  console.error(
+    `[lob-mcp] human gate — google: ${gate.googleEnabled ? "on" : "off"}, password fallback: on`,
+  );
+
   // OAuth 2.0 authorization server (well-known discovery, /register DCR,
-  // /authorize, /token, /revoke). Public — no bearerAuth.
+  // /authorize, /token, /revoke). Public — no bearerAuth. /authorize is fronted
+  // by the gate above; once authenticated, oauthProvider.authorize issues the code.
   app.use(
     mcpAuthRouter({
       provider: oauthProvider,
@@ -110,51 +117,6 @@ function main(): void {
       resourceName: "Lob MCP",
     }),
   );
-
-  // Login-form submission target for the /authorize page. Validates the operator
-  // shared secret, then mints a single-use auth code and bounces back to the
-  // client's redirect_uri.
-  app.post("/oauth/callback", (req: Request, res: Response) => {
-    const { client_id, redirect_uri, code_challenge, state, api_key } =
-      req.body as Record<string, string>;
-
-    const rerender = (error: string): void => {
-      res
-        .status(401)
-        .setHeader("Content-Type", "text/html; charset=utf-8")
-        .send(
-          loginForm({
-            clientId: client_id ?? "",
-            redirectUri: redirect_uri ?? "",
-            codeChallenge: code_challenge ?? "",
-            state,
-            error,
-          }),
-        );
-    };
-
-    if (!client_id || !redirect_uri || !code_challenge) {
-      rerender("Missing required authorization parameters.");
-      return;
-    }
-
-    const trimmed = api_key?.trim() ?? "";
-    if (!trimmed) {
-      rerender("Please enter the lob-mcp access token.");
-      return;
-    }
-    try {
-      validateOperatorSecret(trimmed);
-    } catch (err) {
-      rerender(err instanceof Error ? err.message : "Could not validate token.");
-      return;
-    }
-
-    const code = createAuthCode(client_id, redirect_uri, code_challenge);
-    const params = new URLSearchParams({ code });
-    if (state) params.set("state", state);
-    res.redirect(`${redirect_uri}?${params.toString()}`);
-  });
 
   app.post("/mcp", bearerAuth, async (req: Request, res: Response) => {
     const sessionId = headerSessionId(req);

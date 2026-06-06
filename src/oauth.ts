@@ -195,15 +195,13 @@ export const oauthProvider: OAuthServerProvider = {
   },
 
   async authorize(client, params, res: Response) {
-    res.setHeader("Content-Type", "text/html; charset=utf-8");
-    res.send(
-      loginForm({
-        clientId: client.client_id,
-        redirectUri: params.redirectUri,
-        codeChallenge: params.codeChallenge,
-        state: params.state,
-      }),
-    );
+    // The human is already authenticated by the Google / password gate (http.ts
+    // guards /authorize with the lob_authed cookie). Issue the code directly and
+    // bounce back to the client's redirect_uri — no second prompt.
+    const code = createAuthCode(client.client_id, params.redirectUri, params.codeChallenge);
+    const p = new URLSearchParams({ code });
+    if (params.state) p.set("state", params.state);
+    res.redirect(`${params.redirectUri}?${p.toString()}`);
   },
 
   async challengeForAuthorizationCode(_client, authorizationCode) {

@@ -21,3 +21,6 @@ tests/
 # OAuth token store (secrets — never commit)
 .oauth-store.json
 .oauth-store.json.tmp
+
+.env.bak.*
+src.bak.*
