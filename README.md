@@ -101,6 +101,15 @@ The boot banner prints both modes on startup so you can verify how requests will
 | `LOB_REQUIRE_ELICITATION_FOR_CHECKS_OVER_USD` | _(unset)_ | If set, fires an MCP elicitation form when a check `amount` exceeds this threshold. The form must be confirmed before the send. |
 | `LOB_REQUIRE_ELICITATION_FOR_BULK_OVER_PIECES` | _(unset)_ | If set, fires elicitation when a buckslip or card inventory order's quantity exceeds this threshold. |
 
+### Sign-in domain registry
+
+The hosted HTTP transport's human-identity gate (`GOOGLE_ALLOWED_DOMAINS`) can be unioned with a live domain registry so a dashboard-managed allowlist reaches the running service without an env edit + restart.
+
+| Variable | Default | Description |
+|---|---|---|
+| `AUTHORIZED_DOMAINS_URL` | `https://status.nlma.io/domains.json` | JSON endpoint returning `{"domains": [...]}`. Polled in the background (never on the request path) and unioned with `GOOGLE_ALLOWED_DOMAINS`. Set to an empty string to disable the registry and use `GOOGLE_ALLOWED_DOMAINS` only. |
+| `AUTHORIZED_DOMAINS_TTL` | `60` | Seconds between background refreshes. A failed fetch keeps the last successfully fetched list (or, before any fetch has succeeded, just `GOOGLE_ALLOWED_DOMAINS`) rather than clearing it. |
+
 ### Lob HTTP
 
 | Variable | Default | Description |

@@ -5,7 +5,8 @@
  * machine-to-machine handshake with claude.ai (DCR, PKCE, code→token). This
  * module adds the HUMAN step: before `/authorize` will issue a code, the person
  * must prove identity once — via "Sign in with Google" (allowlisted to
- * GOOGLE_ALLOWED_EMAILS / GOOGLE_ALLOWED_DOMAINS) or, as break-glass, the
+ * GOOGLE_ALLOWED_EMAILS / GOOGLE_ALLOWED_DOMAINS, unioned with the live
+ * domain registry — see registry-domains.ts) or, as break-glass, the
  * operator shared secret (MCP_AUTH_TOKEN) typed into the login form. Success
  * mints a short-lived HMAC-signed `lob_authed` cookie that the `/authorize`
  * gate trusts; the provider then issues the code without any further prompt.
@@ -24,6 +25,7 @@ import express, {
   type Router,
 } from "express";
 import { createHmac, timingSafeEqual, randomUUID } from "node:crypto";
+import { createDomainRegistry } from "./registry-domains.js";
 
 const COOKIE_NAME = "lob_authed";
 const COOKIE_TTL_S = 12 * 60 * 60; // 12h
@@ -150,11 +152,11 @@ function setAuthCookie(res: Response, email: string, secret: string): void {
 
 // ─── allowlist (fail-closed) ─────────────────────────────────────────────────
 
-function emailAllowed(email: string, cfg: GateConfig): boolean {
+function emailAllowed(email: string, cfg: GateConfig, allowedDomains: string[]): boolean {
   const e = email.toLowerCase();
-  const domain = e.includes("@") ? e.slice(e.indexOf("@") + 1) : "";
-  if (cfg.allowedEmails.length === 0 && cfg.allowedDomains.length === 0) return false;
-  return cfg.allowedEmails.includes(e) || (domain !== "" && cfg.allowedDomains.includes(domain));
+  const domain = e.includes("@") ? e.slice(e.lastIndexOf("@") + 1) : "";
+  if (cfg.allowedEmails.length === 0 && allowedDomains.length === 0) return false;
+  return cfg.allowedEmails.includes(e) || (domain !== "" && allowedDomains.includes(domain));
 }
 
 function safeEqual(a: string, b: string): boolean {
@@ -243,6 +245,10 @@ function safeReturn(raw: unknown): string {
 export function createGoogleGate(): GoogleGate {
   const cfg = loadConfig();
   const googleEnabled = Boolean(cfg.googleClientId && cfg.googleClientSecret);
+  // Domains allowed to sign in = GOOGLE_ALLOWED_DOMAINS ∪ the status.nlma.io
+  // domain registry (see registry-domains.ts). GOOGLE_ALLOWED_DOMAINS is
+  // optional once the registry is enabled (the default).
+  const domainRegistry = createDomainRegistry(cfg.allowedDomains);
   const states = new Map<string, { ret: string; exp: number }>();
 
   const sweepStates = (): void => {
@@ -347,7 +353,7 @@ export function createGoogleGate(): GoogleGate {
         sendErr(403, "Your Google account has no verified email.");
         return;
       }
-      if (!emailAllowed(email, cfg)) {
+      if (!emailAllowed(email, cfg, domainRegistry.domains())) {
         res.status(403).setHeader("Content-Type", "text/html; charset=utf-8");
         res.send(deniedPage(email));
         return;
