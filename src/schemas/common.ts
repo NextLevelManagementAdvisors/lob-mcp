@@ -4,46 +4,71 @@
  * that lets callers pass any Lob field not enumerated in a tool schema.
  *
  * Also exports two payload-shaping helpers — `compact` (drop undefined keys) and
- * `withExtra` (merge user-provided extras under typed fields, with typed fields
- * taking precedence so the schema can't be silently overridden).
+ * `withExtra` (merge user-provided extras into the typed payload). Precedence
+ * choice: `withExtra` REJECTS an `extra` call with a `LOB_EXTRA_PARAM_COLLISION`
+ * error if any key also appears as a defined typed field, rather than silently
+ * letting one side win. A typed field exists precisely so the schema can
+ * validate that value; an `extra` key with the same name is almost always a
+ * caller trying to override it (e.g. to work around a validation bug), and a
+ * silent override — whichever direction — hides that from the caller. Fix the
+ * typed field or omit it instead of routing the same key through `extra`.
  */
 import { z } from "zod";
 import { randomUUID } from "node:crypto";
+import { LobMcpError, LobMcpErrorCodes } from "../lob/errors.js";
 
 /**
  * An inline US/international address payload accepted by Lob create endpoints.
  * Either provide a saved address `id` (`adr_…`) on the parent object, or this inline shape.
+ *
+ * A function, not a const: the JSON-schema converter dedupes reused Zod schema
+ * *instances* (by object identity) into `$ref`s. Two fields that both read a
+ * shared const end up as `{ "$ref": "#/properties/<other-field>/..." }` — the
+ * second field's advertised schema points at the first instead of describing
+ * itself. Calling this factory fresh for each field keeps every field's schema
+ * self-contained. See `addressRefSchema` below, which has the same requirement.
  */
-export const inlineAddressSchema = z
-  .object({
-    name: z.string().max(40).optional().describe("Recipient name (max 40 chars)."),
-    company: z.string().max(40).optional().describe("Company name (max 40 chars)."),
-    address_line1: z.string().max(200).describe("Primary street address line."),
-    address_line2: z.string().max(200).optional().describe("Apartment/suite/unit line."),
-    address_city: z.string().max(200).optional(),
-    address_state: z
-      .string()
-      .max(50)
-      .optional()
-      .describe("Two-letter US state code, or full state/province/region name for international."),
-    address_zip: z.string().max(40).optional().describe("ZIP/postal code."),
-    address_country: z
-      .string()
-      .length(2)
-      .optional()
-      .describe("Two-letter ISO country code. Omit or use 'US' for domestic."),
-    phone: z.string().max(40).optional(),
-    email: z.string().email().max(100).optional(),
-  })
-  .describe("Inline address. At minimum, address_line1 plus city/state/zip (or country) are required by Lob.");
+export function inlineAddressSchema() {
+  return z
+    .object({
+      name: z.string().max(40).optional().describe("Recipient name (max 40 chars)."),
+      company: z.string().max(40).optional().describe("Company name (max 40 chars)."),
+      address_line1: z.string().max(200).describe("Primary street address line."),
+      address_line2: z.string().max(200).optional().describe("Apartment/suite/unit line."),
+      address_city: z.string().max(200).optional(),
+      address_state: z
+        .string()
+        .max(50)
+        .optional()
+        .describe("Two-letter US state code, or full state/province/region name for international."),
+      address_zip: z.string().max(40).optional().describe("ZIP/postal code."),
+      address_country: z
+        .string()
+        .length(2)
+        .optional()
+        .describe("Two-letter ISO country code. Omit or use 'US' for domestic."),
+      phone: z.string().max(40).optional(),
+      email: z.string().email().max(100).optional(),
+    })
+    .describe("Inline address. At minimum, address_line1 plus city/state/zip (or country) are required by Lob.");
+}
 
-/** Either a Lob saved-address ID (`adr_…`) or an inline address object. */
-export const addressRefSchema = z
-  .union([
-    z.string().regex(/^adr_/).describe("Existing Lob address ID."),
-    inlineAddressSchema,
-  ])
-  .describe("A Lob saved-address ID (`adr_…`) or an inline address object.");
+/**
+ * Either a Lob saved-address ID (`adr_…`) or an inline address object.
+ * A function for the same reason as `inlineAddressSchema` — see its comment.
+ * Callers that embed this in more than one field of the same object (e.g.
+ * `to`/`from`) MUST call it once per field so each gets its own schema
+ * instance; reusing one call's return value across fields reintroduces the
+ * `$ref` collision this factory exists to avoid.
+ */
+export function addressRefSchema() {
+  return z
+    .union([
+      z.string().regex(/^adr_/).describe("Existing Lob address ID."),
+      inlineAddressSchema(),
+    ])
+    .describe("A Lob saved-address ID (`adr_…`) or an inline address object.");
+}
 
 export const idempotencyKeySchema = z
   .string()
@@ -117,6 +142,8 @@ export const extraParamsSchema = z
   .optional()
   .describe(
     "Additional Lob API parameters not enumerated above. Merged into the request body verbatim. " +
+      "A key here that duplicates a typed parameter above (e.g. 'to' or 'from') is rejected with " +
+      "LOB_EXTRA_PARAM_COLLISION — use the typed field for that value instead. " +
       "See https://docs.lob.com for the full parameter list per resource.",
   );
 
@@ -157,10 +184,25 @@ export function compact<T extends object>(obj: T): Partial<T> {
   return out as Partial<T>;
 }
 
-/** Merge an `extra` record into a typed payload, with explicit fields taking precedence. */
+/**
+ * Merge an `extra` record into a typed payload. Rejects the call if any `extra`
+ * key collides with a defined typed field — see the module-level comment for
+ * why collisions error instead of one side silently winning.
+ */
 export function withExtra(
   payload: object,
   extra: Record<string, unknown> | undefined,
 ): Record<string, unknown> {
-  return { ...(extra ?? {}), ...compact(payload) };
+  const compacted = compact(payload);
+  if (extra) {
+    const collisions = Object.keys(extra).filter((k) => k in compacted);
+    if (collisions.length > 0) {
+      throw new LobMcpError(
+        LobMcpErrorCodes.EXTRA_PARAM_COLLISION,
+        `extra.${collisions.join(", ")} collides with a typed parameter of the same name.`,
+        `Pass ${collisions.length > 1 ? "these values" : "this value"} via the typed field instead of extra.`,
+      );
+    }
+  }
+  return { ...(extra ?? {}), ...compacted };
 }

@@ -26,7 +26,7 @@ export function registerAddressBookTools(server: McpServer, lob: LobClient): voi
       "creating mail pieces. Stored addresses are NOT automatically verified — call " +
       "`lob_us_verifications_create` or `lob_intl_verifications_create` separately if needed.",
     inputSchema: {
-      ...inlineAddressSchema.shape,
+      ...inlineAddressSchema().shape,
       description: z.string().max(500).optional().describe("Internal description of the address."),
       metadata: metadataSchema,
       extra: extraParamsSchema,

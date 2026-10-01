@@ -7,11 +7,11 @@
 import { z } from "zod";
 import { addressRefSchema, mailTypeSchema, mergeVariablesSchema, sendDateSchema } from "./common.js";
 
-export const fromAddressRefSchema = addressRefSchema.describe(
+export const fromAddressRefSchema = addressRefSchema().describe(
   "Sender (return) address. Either a saved address ID (`adr_…`) or an inline address.",
 );
 
-export const toAddressRefSchema = addressRefSchema.describe(
+export const toAddressRefSchema = addressRefSchema().describe(
   "Recipient address. Either a saved address ID (`adr_…`) or an inline address.",
 );
 
