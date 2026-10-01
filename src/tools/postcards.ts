@@ -11,6 +11,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { LobClient } from "../lob/client.js";
 import type { TokenStore } from "../preview/token-store.js";
 import { buildPreviewCommit } from "../preview/preview-commit.js";
+import { resolveAddressRefsForProof } from "../preview/resolve-address-refs.js";
 import type { PieceCounter } from "../safety/piece-counter.js";
 import {
   compact,
@@ -60,12 +61,13 @@ export function registerPostcardTools(
       env: lob.env,
       tokenStore,
       renderPreview: async (payload) => {
+        const resolved = await resolveAddressRefsForProof(lob, payload);
         const proof = (await lob.request({
           method: "POST",
           path: "/resource_proofs",
           body: {
             resource_type: "postcard",
-            resource_parameters: stripCommitOnly(payload),
+            resource_parameters: stripCommitOnly(resolved),
           },
           keyMode: "test",
         })) as Record<string, unknown>;

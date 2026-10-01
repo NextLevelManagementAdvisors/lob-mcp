@@ -11,6 +11,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { LobClient } from "../lob/client.js";
 import type { TokenStore } from "../preview/token-store.js";
 import { buildPreviewCommit } from "../preview/preview-commit.js";
+import { resolveAddressRefsForProof } from "../preview/resolve-address-refs.js";
 import type { PieceCounter } from "../safety/piece-counter.js";
 import {
   compact,
@@ -37,7 +38,9 @@ const LETTER_ID = z.string().regex(/^ltr_/).describe("Letter ID (`ltr_…`).");
 const letterCreateShape = {
   ...mailPieceCommonShape,
   file: contentSourceSchema.describe(
-    "Letter body content source (HTML, URL, template ID, or base64 PDF).",
+    "Letter body content source (HTML, URL, template ID, or base64 PDF). When supplying a " +
+      "multi-page PDF, every page must share the same dimensions — Lob rejects mixed page sizes " +
+      "within one file with a 422 `inconsistent_page_dimensions` error.",
   ),
   color: colorSchema,
   double_sided: doubleSidedSchema,
@@ -93,12 +96,13 @@ export function registerLetterTools(
       env: lob.env,
       tokenStore,
       renderPreview: async (payload) => {
+        const resolved = await resolveAddressRefsForProof(lob, payload);
         const proof = (await lob.request({
           method: "POST",
           path: "/resource_proofs",
           body: {
             resource_type: "letter",
-            resource_parameters: stripCommitOnly(payload),
+            resource_parameters: stripCommitOnly(resolved),
           },
           keyMode: "test",
         })) as Record<string, unknown>;
@@ -129,7 +133,8 @@ export function registerLetterTools(
     annotations: { title: "Preview a letter", ...ToolAnnotationPresets.preview },
     description:
       "Render a Lob proof PDF for a letter without charging or sending. Returns a `confirmation_token` " +
-      "to pass to lob_letters_create. Required in live mode.",
+      "to pass to lob_letters_create. Required in live mode. All pages of `file` must share the same " +
+      "dimensions, or Lob rejects the request with a 422 `inconsistent_page_dimensions` error.",
     inputSchema: letterCreateShape,
     handler: pc.preview,
   });
@@ -142,7 +147,9 @@ export function registerLetterTools(
     },
     description:
       "Commit a letter send. **Billable** in live mode. Requires a `confirmation_token` from " +
-      "lob_letters_preview that matches the current payload (live mode only).",
+      "lob_letters_preview that matches the current payload (live mode only). All pages of `file` " +
+      "must share the same dimensions, or Lob rejects the request with a 422 " +
+      "`inconsistent_page_dimensions` error.",
     inputSchema: letterCommitShape,
     handler: pc.commit,
   });

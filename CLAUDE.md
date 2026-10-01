@@ -143,7 +143,7 @@ scripts/
 - **MCP resource URIs use slashes; on-disk filenames use hyphens.** `lob://specs/letter/legal_8.5x14.pdf` ↔ `build/specs/pdfs/letter-legal_8_5x14.pdf` (slash → hyphen, dot → underscore). The conversion lives in `pdfFilenameFor()` in `src/specs/pdf-loader.ts`.
 - **Token store cleanup is on a 60s interval, `unref()`'d** so it doesn't pin the process. Tests don't wait on it; they call `cleanup()` directly.
 - **Every tool uses `registerTool()`** which catches all handler errors via `formatErrorForTool` and returns `{isError:true, content:[…]}` — errors never escape to the JSON-RPC transport.
-- **Every create/update tool has an `extra` escape hatch** (`extraParamsSchema`) that lets callers pass any Lob parameter not enumerated in the zod schema.
+- **Every create/update tool has an `extra` escape hatch** (`extraParamsSchema`) that lets callers pass any Lob parameter not enumerated in the zod schema. `withExtra()` (`src/schemas/common.ts`) rejects the call with `LOB_EXTRA_PARAM_COLLISION` if an `extra` key duplicates a typed field — no silent override in either direction; fix the typed field instead.
 - **stderr-only logging.** `stdout` is the JSON-RPC transport — `console.log` will corrupt the protocol. All banners and errors go through `console.error`.
 - **PII redaction is recursive.** `redactPii()` walks objects and scrubs `to`, `from`, `name`, `email`, `address_*`, `primary_line`, etc. before any error output crosses the MCP transport.
 - **Every Lob fetch has a per-request timeout** (`LobClient.request` wires an `AbortController` + `setTimeout`, default `LOB_REQUEST_TIMEOUT_MS=30000`). A timeout surfaces as `LobTimeoutError`, formatted with the path and configured ms so the consumer can raise the budget. Each request gets its own controller — never share signals across calls.
@@ -168,6 +168,8 @@ scripts/
 - **Postcard creative PDFs**: 6.25″×4.25″ for `4x6` size. Buckslips: 8.75″×3.75″. Cards: 3.375″×2.125″.
 - **Lob's idempotency TTL is 24 hours.** Retries within that window de-dupe; after that, the same key creates a new resource.
 - **Postcard back ink-free zones differ by size.** 4×6 → 3.2835″×2.375″. 6×9 and 6×11 → 4.0″×2.375″. All anchored bottom-right with 0.275″ horizontal and 0.25″ vertical offset. The `SPEC_MANIFEST` is authoritative.
+- **Letter `file` PDFs must have uniform page dimensions.** A multi-page PDF with mixed page sizes is rejected with a 422 `inconsistent_page_dimensions` error. Noted in `lob_letters_preview`/`lob_letters_create` tool descriptions.
+- **`/resource_proofs` always runs against the test key, but a saved `adr_…` address may only exist in the live book.** `resolveAddressRefsForProof` (`src/preview/resolve-address-refs.ts`) resolves `to`/`from` saved-address IDs with the live key and inlines the result into the proof payload only — the token-bound payload and the eventual commit still carry the original `adr_…` id. Wired into the letter/postcard/self-mailer preview closures; checks have no proof endpoint so there is nothing to resolve.
 
 ## Lob-specific guardrails
 
