@@ -1,0 +1,11 @@
+node_modules
+build
+tests
+.env
+.env.*
+.oauth-store.json
+*.log
+.git
+.claude
+docs
+test-assets
