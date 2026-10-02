@@ -1,0 +1,23 @@
+services:
+  lob-mcp:
+    build: .
+    image: lob-mcp:nlma
+    container_name: lob-mcp
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # .env sets HOST=127.0.0.1 for the bare-metal systemd unit; inside the
+      # container the server must bind all interfaces so the port publish works.
+      HOST: 0.0.0.0
+      PORT: "3018"
+      OAUTH_STORE_PATH: /var/lib/lob-mcp/.oauth-store.json
+    ports:
+      - "127.0.0.1:3018:3018"
+    volumes:
+      - /var/lib/lob-mcp:/var/lib/lob-mcp
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3018/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
